@@ -1,0 +1,712 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Two Ubuntu EC2 nodes and a dedicated IPv4 network for a self-managed Kubernetes cluster.",
+  "Parameters": {
+    "ClusterName": {
+      "Type": "String"
+    },
+    "DeploymentId": {
+      "Type": "String"
+    },
+    "VpcCidr": {
+      "Type": "String"
+    },
+    "SubnetCidr": {
+      "Type": "String"
+    },
+    "AvailabilityZone": {
+      "Type": "AWS::EC2::AvailabilityZone::Name"
+    },
+    "AmiId": {
+      "Type": "AWS::EC2::Image::Id"
+    },
+    "InstanceType": {
+      "Type": "String"
+    },
+    "RootDeviceName": {
+      "Type": "String"
+    },
+    "ControlPlaneIP": {
+      "Type": "String"
+    },
+    "WorkerIP": {
+      "Type": "String"
+    },
+    "AdminCidr": {
+      "Type": "String"
+    },
+    "PublicKeyMaterial": {
+      "Type": "String"
+    },
+    "CpuCredits": {
+      "Type": "String",
+      "AllowedValues": [
+        "standard",
+        "unlimited"
+      ]
+    },
+    "UseCpuCredits": {
+      "Type": "String",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "DiskSize": {
+      "Type": "Number",
+      "MinValue": 30
+    }
+  },
+  "Conditions": {
+    "Burstable": {
+      "Fn::Equals": [
+        {
+          "Ref": "UseCpuCredits"
+        },
+        "true"
+      ]
+    }
+  },
+  "Resources": {
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": {
+          "Ref": "VpcCidr"
+        },
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-vpc"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "Subnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "CidrBlock": {
+          "Ref": "SubnetCidr"
+        },
+        "AvailabilityZone": {
+          "Ref": "AvailabilityZone"
+        },
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-subnet"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-igw"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-routes"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "DefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "RouteTable"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        }
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "SubnetRouteAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "Subnet"
+        },
+        "RouteTableId": {
+          "Ref": "RouteTable"
+        }
+      }
+    },
+    "NodeSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "GroupDescription": {
+          "Fn::Sub": "${ClusterName} nodes"
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "-1",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-nodes"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "ControlPlaneSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "GroupDescription": {
+          "Fn::Sub": "${ClusterName} control-plane"
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "-1",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-control-plane"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "SSHIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "NodeSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 22,
+        "ToPort": 22,
+        "CidrIp": {
+          "Ref": "AdminCidr"
+        }
+      }
+    },
+    "APIIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "ControlPlaneSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 6443,
+        "ToPort": 6443,
+        "SourceSecurityGroupId": {
+          "Ref": "NodeSecurityGroup"
+        }
+      }
+    },
+    "KubeletIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "NodeSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 10250,
+        "ToPort": 10250,
+        "SourceSecurityGroupId": {
+          "Ref": "ControlPlaneSecurityGroup"
+        }
+      }
+    },
+    "VXLANIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "NodeSecurityGroup"
+        },
+        "IpProtocol": "udp",
+        "FromPort": 8472,
+        "ToPort": 8472,
+        "SourceSecurityGroupId": {
+          "Ref": "NodeSecurityGroup"
+        }
+      }
+    },
+    "HealthIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "NodeSecurityGroup"
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 4240,
+        "ToPort": 4240,
+        "SourceSecurityGroupId": {
+          "Ref": "NodeSecurityGroup"
+        }
+      }
+    },
+    "ICMPIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Ref": "NodeSecurityGroup"
+        },
+        "IpProtocol": "icmp",
+        "FromPort": -1,
+        "ToPort": -1,
+        "SourceSecurityGroupId": {
+          "Ref": "NodeSecurityGroup"
+        }
+      }
+    },
+    "SSHKey": {
+      "Type": "AWS::EC2::KeyPair",
+      "Properties": {
+        "KeyName": {
+          "Fn::Sub": "${ClusterName}-ssh"
+        },
+        "PublicKeyMaterial": {
+          "Ref": "PublicKeyMaterial"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-ssh"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          }
+        ]
+      }
+    },
+    "ControlPlane": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "AmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "KeyName": {
+          "Ref": "SSHKey"
+        },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": {
+              "Ref": "RootDeviceName"
+            },
+            "Ebs": {
+              "VolumeSize": {
+                "Ref": "DiskSize"
+              },
+              "VolumeType": "gp3",
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "PropagateTagsToVolumeOnCreation": true,
+        "MetadataOptions": {
+          "HttpEndpoint": "enabled",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "Subnet"
+            },
+            "GroupSet": [
+              {
+                "Ref": "NodeSecurityGroup"
+              },
+              {
+                "Ref": "ControlPlaneSecurityGroup"
+              }
+            ],
+            "PrivateIpAddress": {
+              "Ref": "ControlPlaneIP"
+            },
+            "AssociatePublicIpAddress": true,
+            "DeleteOnTermination": true
+          }
+        ],
+        "CreditSpecification": {
+          "Fn::If": [
+            "Burstable",
+            {
+              "CPUCredits": {
+                "Ref": "CpuCredits"
+              }
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "InstanceInitiatedShutdownBehavior": "stop",
+        "SourceDestCheck": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-cp"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          },
+          {
+            "Key": "role",
+            "Value": "control-plane"
+          }
+        ]
+      },
+      "DependsOn": [
+        "DefaultRoute",
+        "SubnetRouteAssociation"
+      ]
+    },
+    "Worker": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "AmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "KeyName": {
+          "Ref": "SSHKey"
+        },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": {
+              "Ref": "RootDeviceName"
+            },
+            "Ebs": {
+              "VolumeSize": {
+                "Ref": "DiskSize"
+              },
+              "VolumeType": "gp3",
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "PropagateTagsToVolumeOnCreation": true,
+        "MetadataOptions": {
+          "HttpEndpoint": "enabled",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 1
+        },
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "Subnet"
+            },
+            "GroupSet": [
+              {
+                "Ref": "NodeSecurityGroup"
+              }
+            ],
+            "PrivateIpAddress": {
+              "Ref": "WorkerIP"
+            },
+            "AssociatePublicIpAddress": true,
+            "DeleteOnTermination": true
+          }
+        ],
+        "CreditSpecification": {
+          "Fn::If": [
+            "Burstable",
+            {
+              "CPUCredits": {
+                "Ref": "CpuCredits"
+              }
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "InstanceInitiatedShutdownBehavior": "stop",
+        "SourceDestCheck": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-worker"
+            }
+          },
+          {
+            "Key": "managed-by",
+            "Value": "k8s-bootstrap"
+          },
+          {
+            "Key": "cluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          },
+          {
+            "Key": "deployment",
+            "Value": {
+              "Ref": "DeploymentId"
+            }
+          },
+          {
+            "Key": "role",
+            "Value": "worker"
+          }
+        ]
+      },
+      "DependsOn": [
+        "DefaultRoute",
+        "SubnetRouteAssociation"
+      ]
+    }
+  },
+  "Outputs": {
+    "ControlPlaneInstanceId": {
+      "Value": {
+        "Ref": "ControlPlane"
+      }
+    },
+    "WorkerInstanceId": {
+      "Value": {
+        "Ref": "Worker"
+      }
+    },
+    "ControlPlanePublicIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "PublicIp"
+        ]
+      }
+    },
+    "ControlPlanePrivateIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "ControlPlane",
+          "PrivateIp"
+        ]
+      }
+    },
+    "WorkerPublicIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Worker",
+          "PublicIp"
+        ]
+      }
+    },
+    "WorkerPrivateIP": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Worker",
+          "PrivateIp"
+        ]
+      }
+    },
+    "VpcId": {
+      "Value": {
+        "Ref": "VPC"
+      }
+    },
+    "SubnetId": {
+      "Value": {
+        "Ref": "Subnet"
+      }
+    },
+    "AvailabilityZone": {
+      "Value": {
+        "Ref": "AvailabilityZone"
+      }
+    },
+    "SSHUser": {
+      "Value": "ubuntu"
+    },
+    "KeyName": {
+      "Value": {
+        "Ref": "SSHKey"
+      }
+    }
+  }
+}
